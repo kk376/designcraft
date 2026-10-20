@@ -215,3 +215,91 @@ fn track_changes_deleting_inserted_text_reconciles_hyperlink_ranges() {
     assert_eq!(text, "Hello world. See page 2 for details.");
     assert_eq!(text_hyperlink_range(&s, hid), (17, 23));
 }
+
+#[test]
+fn change_case_adjusts_hyperlink_offsets_when_text_length_changes() {
+    let initial = "Look at \u{FB01} and see page 2 for details.";
+    let (mut s, sid, _) = fixture(initial);
+
+    // "\u{FB01}" (fi ligature) is at bytes 8..11 (3 bytes).
+    // "page 2" is at bytes 20..26.
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 20, "focus": 26})).unwrap();
+    let hid = s.execute("hyperlink.create", &json!({"url": "https://example.com"})).unwrap()["ids"][0].as_u64().unwrap();
+    assert_eq!(text_hyperlink_range(&s, hid), (20, 26));
+
+    // Select "\u{FB01}" (8..11) and convert to uppercase ("FI", 2 bytes)
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 8, "focus": 11})).unwrap();
+    s.execute("type.changeCase", &json!({"case": "upper"})).unwrap();
+
+    let text = &s.doc().unwrap().doc.story(sid).unwrap().text;
+    assert_eq!(text, "Look at FI and see page 2 for details.");
+
+    // Hyperlink should shift backward by 1 byte: 19..25
+    let (start, end) = text_hyperlink_range(&s, hid);
+    assert_eq!((start, end), (19, 25));
+    assert_eq!(&text[start..end], "page 2");
+}
+
+#[test]
+fn formatted_paste_adjusts_hyperlinks_and_placeholders() {
+    let initial = "Hello world. See page 2 for details.";
+    let (mut s, sid, _) = fixture(initial);
+
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 17, "focus": 23})).unwrap();
+    let hid = s.execute("hyperlink.create", &json!({"url": "https://example.com"})).unwrap()["ids"][0].as_u64().unwrap();
+    assert_eq!(text_hyperlink_range(&s, hid), (17, 23));
+
+    // Select "Hello " (0..6) and copy it
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 6})).unwrap();
+    s.execute("edit.copy", &json!({})).unwrap();
+
+    // Move caret to start and paste formatted
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+    s.execute("edit.paste", &json!({"formatted": true})).unwrap();
+
+    let text = &s.doc().unwrap().doc.story(sid).unwrap().text;
+    assert_eq!(text, "Hello Hello world. See page 2 for details.");
+
+    // Hyperlink shifts forward by 6 bytes: 23..29
+    let (start, end) = text_hyperlink_range(&s, hid);
+    assert_eq!((start, end), (23, 29));
+    assert_eq!(&text[start..end], "page 2");
+}
+
+#[test]
+fn drag_move_preserves_hyperlink_and_adjusts_intervening_ranges() {
+    let initial = "Hello brave world.";
+    let (mut s, sid, fid) = fixture(initial);
+
+    // Hyperlink on "brave" (6..11)
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 6, "focus": 11})).unwrap();
+    let hid = s.execute("hyperlink.create", &json!({"url": "https://example.com/brave"})).unwrap()["ids"][0].as_u64().unwrap();
+    assert_eq!(text_hyperlink_range(&s, hid), (6, 11));
+
+    let at = |s: &Session, b: usize| {
+        let d = &s.doc().unwrap().doc;
+        let cs = designcraft_compose::compose_story(d, sid, &Default::default());
+        let l = &cs.frames[0].lines[0];
+        let g = l.glyphs.iter().find(|g| g.byte == b).unwrap();
+        json!([g.x + g.adv * 0.25, l.baseline - 3.0])
+    };
+    let end = |s: &Session| {
+        let d = &s.doc().unwrap().doc;
+        let cs = designcraft_compose::compose_story(d, sid, &Default::default());
+        let l = &cs.frames[0].lines[0];
+        json!([l.end_x + 2.0, l.baseline - 3.0])
+    };
+
+    // Drag "brave " (6..12) to the end of the line
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 6, "focus": 12})).unwrap();
+    s.execute("text.placeCaret", &json!({"frame": fid, "point": at(&s, 8)})).unwrap();
+    s.execute("text.release", &json!({"frame": fid, "point": end(&s), "moved": true})).unwrap();
+
+    let text = &s.doc().unwrap().doc.story(sid).unwrap().text;
+    assert_eq!(text, "Hello world.brave ");
+
+    // The hyperlink on "brave" must follow the moved text to 12..17
+    let (start, end_pos) = text_hyperlink_range(&s, hid);
+    assert_eq!((start, end_pos), (12, 17));
+    assert_eq!(&text[start..end_pos], "brave");
+}
