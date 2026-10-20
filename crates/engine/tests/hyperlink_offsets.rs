@@ -186,3 +186,32 @@ fn undo_and_redo_restore_hyperlink_ranges() {
     s.execute("edit.redo", &json!({})).unwrap();
     assert_eq!(text_hyperlink_range(&s, hid), (21, 27));
 }
+
+#[test]
+fn track_changes_deleting_inserted_text_reconciles_hyperlink_ranges() {
+    let initial = "Hello world. See page 2 for details.";
+    let (mut s, sid, _) = fixture(initial);
+
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 17, "focus": 23})).unwrap();
+    let hid = s.execute("hyperlink.create", &json!({"url": "https://example.com"})).unwrap()["ids"][0].as_u64().unwrap();
+    assert_eq!(text_hyperlink_range(&s, hid), (17, 23));
+
+    // Enable Track Changes
+    s.execute("changes.track", &json!({"track": true})).unwrap();
+
+    // Type "Draft " (6 bytes) at offset 0 while tracking
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+    s.execute("text.insert", &json!({"text": "Draft ", "raw": true})).unwrap();
+
+    // Hyperlink shifts to 23..29
+    assert_eq!(text_hyperlink_range(&s, hid), (23, 29));
+
+    // Now select and delete the inserted "Draft " (0..6) while tracking is on
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 6})).unwrap();
+    s.execute("text.delete", &json!({})).unwrap();
+
+    // The inserted text was physically removed, so the hyperlink must reconcile back to 17..23
+    let text = &s.doc().unwrap().doc.story(sid).unwrap().text;
+    assert_eq!(text, "Hello world. See page 2 for details.");
+    assert_eq!(text_hyperlink_range(&s, hid), (17, 23));
+}

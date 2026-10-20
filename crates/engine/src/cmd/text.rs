@@ -742,7 +742,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         }
         if tracking && t.cell.is_none() {
             // Track Changes: the replaced text is marked deleted, the typing inserted after it.
-            let at = super::changes::mark_deleted(st, r.clone());
+            let (at, removed) = super::changes::mark_deleted_reporting(st, r.clone());
             reserve_command_text(st, text.len())?;
             let mut fmt = st.insert_format_at(at).clone();
             if let Some(f) = &typing {
@@ -752,6 +752,9 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
             st.insert_with(at, &text, fmt);
             let pos = at + text.len() - trail;
             sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
+            for rr in removed {
+                d.adjust_text_ranges(t.story, rr, 0);
+            }
             d.adjust_text_ranges(t.story, at..at, text.len());
             return Ok(json!({"pos": pos}));
         }
@@ -865,15 +868,23 @@ pub(crate) fn delete_selection(s: &mut Session) -> Result<Value> {
     s.edit(|d, sel| {
         let t = sel.text.ok_or_else(|| bad("text.delete", "no text"))?;
         let r = t.range();
+        let mut removed_ranges = Vec::new();
         if let Some(st) = d.text_story_mut(t.story, t.cell) {
             if tracking && t.cell.is_none() {
-                super::changes::mark_deleted(st, r.clone());
+                let (_, removed) = super::changes::mark_deleted_reporting(st, r.clone());
+                removed_ranges = removed;
             } else {
                 st.delete(r.clone());
             }
         }
-        if !tracking && t.cell.is_none() {
-            d.adjust_text_ranges(t.story, r.clone(), 0);
+        if t.cell.is_none() {
+            if tracking {
+                for rr in removed_ranges {
+                    d.adjust_text_ranges(t.story, rr, 0);
+                }
+            } else {
+                d.adjust_text_ranges(t.story, r.clone(), 0);
+            }
         }
         sel.text = Some(TextSel { anchor: r.start, focus: r.start, ..t });
         ok()
@@ -900,9 +911,12 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
         let r = with_break_pair(&st.text, r);
         if tracking && t.cell.is_none() {
             // Marked, not removed: the caret steps over the deleted text.
-            let at = super::changes::mark_deleted(st, r.clone());
+            let (at, removed) = super::changes::mark_deleted_reporting(st, r.clone());
             let pos = if forward { at.max(r.end.min(st.len())) } else { r.start.min(at) };
             sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
+            for rr in removed {
+                d.adjust_text_ranges(t.story, rr, 0);
+            }
             return ok();
         }
         st.delete(r.clone());
