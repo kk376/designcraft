@@ -241,6 +241,29 @@ fn change_case_adjusts_hyperlink_offsets_when_text_length_changes() {
 }
 
 #[test]
+fn change_case_preserves_hyperlink_strictly_inside_selection() {
+    let initial = "Hello world";
+    let (mut s, sid, _) = fixture(initial);
+
+    // Hyperlink on "world" (6..11)
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 6, "focus": 11})).unwrap();
+    let hid = s.execute("hyperlink.create", &json!({"url": "https://example.com/world"})).unwrap()["ids"][0].as_u64().unwrap();
+    assert_eq!(text_hyperlink_range(&s, hid), (6, 11));
+
+    // Select entire line (0..11) containing the hyperlink inside it and uppercase
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 11})).unwrap();
+    s.execute("type.changeCase", &json!({"case": "upper"})).unwrap();
+
+    let text = &s.doc().unwrap().doc.story(sid).unwrap().text;
+    assert_eq!(text, "HELLO WORLD");
+
+    // Hyperlink must remain intact at 6..11
+    let (start, end) = text_hyperlink_range(&s, hid);
+    assert_eq!((start, end), (6, 11));
+    assert_eq!(&text[start..end], "WORLD");
+}
+
+#[test]
 fn formatted_paste_adjusts_hyperlinks_and_placeholders() {
     let initial = "Hello world. See page 2 for details.";
     let (mut s, sid, _) = fixture(initial);

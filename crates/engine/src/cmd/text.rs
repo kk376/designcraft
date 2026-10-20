@@ -2408,7 +2408,13 @@ fn change_case(s: &mut Session, p: &Value) -> Result<Value> {
                     if new != old {
                         delta += new.len() as isize - old.len() as isize;
                         st.replace(seg.clone(), &new);
-                        changes.push((seg.clone(), new.len()));
+                        // Per-character changes (back to front), so ranges inside the run keep their boundaries.
+                        for (i, (b, m)) in starts.iter().zip(&mapped).enumerate().rev().filter(|(_, (b, _))| seg.contains(b)) {
+                            let ce = starts.get(i + 1).copied().unwrap_or(r.end);
+                            if m.len() != ce - b {
+                                changes.push((*b..ce, m.len()));
+                            }
+                        }
                     }
                 }
                 (delta, r, changes)
