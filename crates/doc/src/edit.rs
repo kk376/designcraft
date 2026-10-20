@@ -834,6 +834,57 @@ impl Document {
             true
         });
     }
+
+    /// Shifts text ranges when a block of text in `story` is moved from `from` to `to` (the insertion offset after deletion).
+    pub fn move_text_ranges(&mut self, story: StoryId, from: std::ops::Range<usize>, to: usize) {
+        if from.is_empty() {
+            return;
+        }
+        let (da, db) = (from.start, from.end);
+        let len = db - da;
+
+        let mut moved_hyperlinks = Vec::new();
+        self.hyperlinks.retain_mut(|h| {
+            if let crate::HyperlinkSource::Text { story: sid, start, end } = h.source
+                && sid == story
+                && start >= da
+                && end <= db
+            {
+                let mut moved = h.clone();
+                if let crate::HyperlinkSource::Text { start: ref mut ms, end: ref mut me, .. } = moved.source {
+                    *ms = to + (start - da);
+                    *me = to + (end - da);
+                }
+                moved_hyperlinks.push(moved);
+                return false;
+            }
+            true
+        });
+
+        let mut moved_placeholders = Vec::new();
+        self.data_merge.placeholders.retain_mut(|ph| {
+            if let crate::PlaceholderAnchor::Text { story: sid, start, end } = ph.anchor
+                && sid == story
+                && start >= da
+                && end <= db
+            {
+                let mut moved = ph.clone();
+                if let crate::PlaceholderAnchor::Text { start: ref mut ms, end: ref mut me, .. } = moved.anchor {
+                    *ms = to + (start - da);
+                    *me = to + (end - da);
+                }
+                moved_placeholders.push(moved);
+                return false;
+            }
+            true
+        });
+
+        self.adjust_text_ranges(story, da..db, 0);
+        self.adjust_text_ranges(story, to..to, len);
+
+        self.hyperlinks.extend(moved_hyperlinks);
+        self.data_merge.placeholders.extend(moved_placeholders);
+    }
 }
 
 /// How deep nested stories (a cell's text, a footnote's text, an endnote's text) are followed

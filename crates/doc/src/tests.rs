@@ -404,3 +404,32 @@ fn adjust_text_ranges_tracks_and_prunes_hyperlinks_and_placeholders() {
     assert!(d.hyperlinks.is_empty());
     assert!(d.data_merge.placeholders.is_empty());
 }
+
+#[test]
+fn move_text_ranges_tracks_hyperlinks_and_placeholders() {
+    let mut d = doc();
+    let sid = StoryId(1);
+    d.hyperlinks.push(Hyperlink {
+        id: 1,
+        name: "Inside".into(),
+        source: HyperlinkSource::Text { story: sid, start: 22, end: 28 },
+        dest: HyperlinkDest::Url("https://example.com/inside".into()),
+    });
+    d.hyperlinks.push(Hyperlink {
+        id: 2,
+        name: "Between".into(),
+        source: HyperlinkSource::Text { story: sid, start: 5, end: 10 },
+        dest: HyperlinkDest::Url("https://example.com/between".into()),
+    });
+
+    // Move block 20..30 to position 0 (before both links).
+    // The moved block (length 10) lands at 0..10.
+    // The link inside (22..28, relative offset +2..+8) becomes 2..8.
+    // The link originally at 5..10 shifts forward by 10 to 15..20.
+    d.move_text_ranges(sid, 20..30, 0);
+
+    let inside = d.hyperlinks.iter().find(|h| h.id == 1).unwrap();
+    let between = d.hyperlinks.iter().find(|h| h.id == 2).unwrap();
+    assert_eq!(inside.source, HyperlinkSource::Text { story: sid, start: 2, end: 8 });
+    assert_eq!(between.source, HyperlinkSource::Text { story: sid, start: 15, end: 20 });
+}

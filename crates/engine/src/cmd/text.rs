@@ -649,18 +649,28 @@ fn release(s: &mut Session, p: &Value) -> Result<Value> {
         return ok();
     }
     s.edit(|d, sel| {
-        let st = d.text_story_mut(sid, cell).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-        let piece = st.extract(r.clone());
-        let mut at = b;
-        if !copy {
-            st.delete(r.clone());
-            if at > r.start {
-                at -= r.len().min(at - r.start);
+        let (piece_len, at, r) = {
+            let st = d.text_story_mut(sid, cell).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+            let piece = st.extract(r.clone());
+            let mut at = b;
+            if !copy {
+                st.delete(r.clone());
+                if at > r.start {
+                    at -= r.len().min(at - r.start);
+                }
+            }
+            let end = st.insert_story(at, &piece);
+            sel.text = Some(TextSel { story: sid, anchor: at, focus: end, frame: Some(frame), cell });
+            (piece.text.len(), at, r)
+        };
+        if cell.is_none() {
+            if copy {
+                d.adjust_text_ranges(sid, at..at, piece_len);
+            } else {
+                d.move_text_ranges(sid, r, at);
             }
         }
-        let end = st.insert_story(at, &piece);
-        sel.text = Some(TextSel { story: sid, anchor: at, focus: end, frame: Some(frame), cell });
-        Ok(json!({"moved": piece.text.len(), "at": at}))
+        Ok(json!({"moved": piece_len, "at": at}))
     })
 }
 
@@ -2382,20 +2392,30 @@ fn change_case(s: &mut Session, p: &Value) -> Result<Value> {
     let targets = format_targets(s);
     s.edit(|d, sel| {
         for t in &targets {
-            let Some(st) = d.text_story_mut(t.story, t.cell) else { continue };
-            let r = t.range.start.min(st.len())..t.range.end.min(st.len());
-            let mapped = case_map(st.slice(r.clone()), &case);
-            // Replace run by run (from the end) so every run keeps its formatting.
-            let segs: Vec<std::ops::Range<usize>> =
-                st.runs().map(|(rr, _)| rr.start.max(r.start)..rr.end.min(r.end)).filter(|x| x.start < x.end).collect();
-            let starts: Vec<usize> = st.slice(r.clone()).char_indices().map(|(i, _)| r.start + i).collect();
-            let mut delta: isize = 0;
-            for seg in segs.iter().rev() {
-                let old = st.slice(seg.clone()).to_string();
-                let new: String = starts.iter().zip(&mapped).filter(|(b, _)| seg.contains(b)).map(|(_, m)| m.as_str()).collect();
-                if new != old {
-                    delta += new.len() as isize - old.len() as isize;
-                    st.replace(seg.clone(), &new);
+            let (delta, r, changes) = {
+                let Some(st) = d.text_story_mut(t.story, t.cell) else { continue };
+                let r = t.range.start.min(st.len())..t.range.end.min(st.len());
+                let mapped = case_map(st.slice(r.clone()), &case);
+                // Replace run by run (from the end) so every run keeps its formatting.
+                let segs: Vec<std::ops::Range<usize>> =
+                    st.runs().map(|(rr, _)| rr.start.max(r.start)..rr.end.min(r.end)).filter(|x| x.start < x.end).collect();
+                let starts: Vec<usize> = st.slice(r.clone()).char_indices().map(|(i, _)| r.start + i).collect();
+                let mut delta: isize = 0;
+                let mut changes = Vec::new();
+                for seg in segs.iter().rev() {
+                    let old = st.slice(seg.clone()).to_string();
+                    let new: String = starts.iter().zip(&mapped).filter(|(b, _)| seg.contains(b)).map(|(_, m)| m.as_str()).collect();
+                    if new != old {
+                        delta += new.len() as isize - old.len() as isize;
+                        st.replace(seg.clone(), &new);
+                        changes.push((seg.clone(), new.len()));
+                    }
+                }
+                (delta, r, changes)
+            };
+            if t.cell.is_none() {
+                for (seg, new_len) in changes {
+                    d.adjust_text_ranges(t.story, seg, new_len);
                 }
             }
             if let Some(ts) = sel.text.as_mut().filter(|ts| ts.story == t.story && ts.cell == t.cell && !ts.is_caret()) {
