@@ -512,3 +512,40 @@ fn xref_insert_paragraph_target_shifts_subsequent_hyperlinks() {
     let anchor_shift = designcraft_doc::ANCHOR_MARK.len_utf8();
     assert_eq!(text_hyperlink_range(&s, hid), (link_start + anchor_shift, link_end + anchor_shift));
 }
+
+#[test]
+fn tracked_replacement_pruning_selected_entry_does_not_corrupt_unrelated_entry() {
+    let initial = "Initial text. ";
+    let (mut s, sid, _) = fixture(initial);
+
+    // Track Changes on
+    s.execute("changes.track", &json!({"on": true})).unwrap();
+
+    // Type text under track changes at offset 14: "Tracked link. Unrelated link."
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 14, "focus": 14})).unwrap();
+    s.execute("text.insert", &json!({"text": "Tracked link. Unrelated link.", "raw": true})).unwrap();
+
+    // "Tracked link" is at 14..26 (marked Inserted). Add a hyperlink on it.
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 14, "focus": 26})).unwrap();
+    let h1 = s.execute("hyperlink.create", &json!({"url": "https://example.com/tracked"})).unwrap()["ids"][0].as_u64().unwrap();
+
+    // "Unrelated link" is at 28..42. Add a hyperlink on it.
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 28, "focus": 42})).unwrap();
+    let h2 = s.execute("hyperlink.create", &json!({"url": "https://example.com/unrelated"})).unwrap()["ids"][0].as_u64().unwrap();
+
+    assert_eq!(text_hyperlink_range(&s, h1), (14, 26));
+    assert_eq!(text_hyperlink_range(&s, h2), (28, 42));
+
+    // Now select "Tracked link." (14..27) which has ChangeMark::Inserted and replace it with "New."
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 14, "focus": 27})).unwrap();
+    s.execute("text.insert", &json!({"text": "New.", "raw": true})).unwrap();
+
+    // The old tracked text (14..27) was physically removed by mark_deleted_reporting.
+    // h1 covered (14..26) inside that removed range, and was pruned.
+    // h2 must NOT have been corrupted by taking on the insertion span!
+    // It should simply have shifted with the edit (14..27 removed, 4 bytes inserted -> net delta -9).
+    assert_eq!(text_hyperlink_range(&s, h2), (19, 33));
+    let doc = &s.doc().unwrap().doc;
+    let st_text = &doc.story(sid).unwrap().text;
+    assert_eq!(&st_text[19..33], "Unrelated link");
+}
