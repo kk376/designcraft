@@ -67,7 +67,15 @@ fn destination(d: &mut designcraft_doc::Document, p: &Value) -> Result<u64> {
     } else {
         return Err(bad("xref.insert", "give `anchor`, `paragraph` or `story` + `para`"));
     };
-    d.paragraph_anchor(sid, pos).ok_or_else(|| bad("xref.insert", "could not anchor the paragraph"))
+    let before = d.story(sid).map_or(0, |st| st.len());
+    let id = d.paragraph_anchor(sid, pos).ok_or_else(|| bad("xref.insert", "could not anchor the paragraph"))?;
+    let grew = d.story(sid).map_or(0, |st| st.len()).saturating_sub(before);
+    if grew > 0
+        && let Some((asid, apos)) = d.find_anchor(id)
+    {
+        d.adjust_text_ranges(asid, apos..apos, grew);
+    }
+    Ok(id)
 }
 
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {

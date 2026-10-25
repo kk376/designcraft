@@ -762,27 +762,58 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
             st.insert_with(at, &text, fmt);
             let pos = at + text.len() - trail;
             sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
+
+            let redirect_links: Vec<usize> = if !r.is_empty() && !text.is_empty() {
+                d.hyperlinks
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, h)| match &h.source {
+                        designcraft_doc::HyperlinkSource::Text { story: sid, start, end }
+                            if *sid == t.story && *start >= r.start && *end <= r.end =>
+                        {
+                            Some(i)
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
+            let redirect_phs: Vec<usize> = if !r.is_empty() && !text.is_empty() {
+                d.data_merge
+                    .placeholders
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, ph)| match &ph.anchor {
+                        designcraft_doc::PlaceholderAnchor::Text { story: sid, start, end }
+                            if *sid == t.story && *start >= r.start && *end <= r.end =>
+                        {
+                            Some(i)
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
+
             for rr in removed {
                 d.adjust_text_ranges(t.story, rr, 0);
             }
             d.adjust_text_ranges(t.story, at..at, text.len());
-            if !r.is_empty() && !text.is_empty() {
+            if !redirect_links.is_empty() || !redirect_phs.is_empty() {
                 let ins_span = at..at + text.len();
-                for h in &mut d.hyperlinks {
-                    if let designcraft_doc::HyperlinkSource::Text { story: sid, start, end } = &mut h.source
-                        && *sid == t.story
-                        && *start >= r.start
-                        && *end <= r.end
+                for idx in redirect_links {
+                    if let Some(h) = d.hyperlinks.get_mut(idx)
+                        && let designcraft_doc::HyperlinkSource::Text { start, end, .. } = &mut h.source
                     {
                         *start = ins_span.start;
                         *end = ins_span.end;
                     }
                 }
-                for ph in &mut d.data_merge.placeholders {
-                    if let designcraft_doc::PlaceholderAnchor::Text { story: sid, start, end } = &mut ph.anchor
-                        && *sid == t.story
-                        && *start >= r.start
-                        && *end <= r.end
+                for idx in redirect_phs {
+                    if let Some(ph) = d.data_merge.placeholders.get_mut(idx)
+                        && let designcraft_doc::PlaceholderAnchor::Text { start, end, .. } = &mut ph.anchor
                     {
                         *start = ins_span.start;
                         *end = ins_span.end;

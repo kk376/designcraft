@@ -460,3 +460,55 @@ fn zero_length_placeholder_at_caret_is_preserved_on_story_edits() {
     let ph = doc.data_merge.placeholders.iter().find(|p| p.id == ph_id).expect("placeholder must survive edit");
     assert_eq!(ph.anchor, designcraft_doc::PlaceholderAnchor::Text { story: sid, start: 14, end: 14 });
 }
+
+#[test]
+fn find_change_in_table_cell_does_not_shift_story_hyperlinks() {
+    let initial = "Before table. ";
+    let (mut s, sid, _) = fixture(initial);
+
+    // Insert a table with 1 row and 1 col, typing "apple" into the cell
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 14, "focus": 14})).unwrap();
+    s.execute("table.insert", &json!({"rows": 1, "cols": 1})).unwrap();
+    s.execute("text.insert", &json!({"text": "apple", "raw": true})).unwrap();
+
+    // Add more text and a hyperlink to the parent story
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 15, "focus": 15})).unwrap();
+    s.execute("text.insert", &json!({"text": "After table link text.", "raw": true})).unwrap();
+
+    // Link covers "link" in parent story
+    let st_text = &s.doc().unwrap().doc.story(sid).unwrap().text;
+    let link_start = st_text.find("link").unwrap();
+    let link_end = link_start + 4;
+    s.execute("text.select", &json!({"story": sid.0, "anchor": link_start, "focus": link_end})).unwrap();
+    let hid = s.execute("hyperlink.create", &json!({"url": "https://example.com"})).unwrap()["ids"][0].as_u64().unwrap();
+    assert_eq!(text_hyperlink_range(&s, hid), (link_start, link_end));
+
+    // Run find.change on document scope to replace "apple" with "longer replacement" in the cell
+    let r = s.execute("find.change", &json!({"find": "apple", "change": "longer replacement", "scope": "document"})).unwrap();
+    assert_eq!(r["count"], 1);
+
+    // The cell was changed, but the parent story hyperlink offsets MUST remain intact
+    assert_eq!(text_hyperlink_range(&s, hid), (link_start, link_end));
+}
+
+#[test]
+fn xref_insert_paragraph_target_shifts_subsequent_hyperlinks() {
+    let initial = "First target paragraph.\nSecond paragraph with a link here.";
+    let (mut s, sid, _) = fixture(initial);
+
+    // "link" in second paragraph
+    let link_start = initial.find("link").unwrap();
+    let link_end = link_start + 4;
+    s.execute("text.select", &json!({"story": sid.0, "anchor": link_start, "focus": link_end})).unwrap();
+    let hid = s.execute("hyperlink.create", &json!({"url": "https://example.com"})).unwrap()["ids"][0].as_u64().unwrap();
+    assert_eq!(text_hyperlink_range(&s, hid), (link_start, link_end));
+
+    // Insert cross reference at the end of the second paragraph targeting the first paragraph
+    s.execute("text.select", &json!({"story": sid.0, "anchor": initial.len(), "focus": initial.len()})).unwrap();
+    s.execute("xref.insert", &json!({"paragraph": "First target"})).unwrap();
+
+    // The first paragraph now has an ANCHOR_MARK inserted at offset 0.
+    // The hyperlink in the second paragraph is after offset 0, so it must shift by ANCHOR_MARK.len_utf8()!
+    let anchor_shift = designcraft_doc::ANCHOR_MARK.len_utf8();
+    assert_eq!(text_hyperlink_range(&s, hid), (link_start + anchor_shift, link_end + anchor_shift));
+}
