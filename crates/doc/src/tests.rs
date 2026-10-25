@@ -383,26 +383,68 @@ fn adjust_text_ranges_tracks_and_prunes_hyperlinks_and_placeholders() {
     d.adjust_text_ranges(sid, 18..18, 4);
     assert_eq!(d.hyperlinks[0].source, HyperlinkSource::Text { story: sid, start: 15, end: 29 });
 
-    // 4. Insert after range (at 30, length 5) -> no change
-    d.adjust_text_ranges(sid, 30..30, 5);
+    // 4. Typing at the very end of the range (at 29, length 3) -> does not expand range
+    d.adjust_text_ranges(sid, 29..29, 3);
     assert_eq!(d.hyperlinks[0].source, HyperlinkSource::Text { story: sid, start: 15, end: 29 });
 
-    // 5. Delete before range (0..5, length 0) -> shifts back by 5: 10..24
+    // 5. Insert after range (at 35, length 5) -> no change
+    d.adjust_text_ranges(sid, 35..35, 5);
+    assert_eq!(d.hyperlinks[0].source, HyperlinkSource::Text { story: sid, start: 15, end: 29 });
+
+    // 6. Delete before range (0..5, length 0) -> shifts back by 5: 10..24
     d.adjust_text_ranges(sid, 0..5, 0);
     assert_eq!(d.hyperlinks[0].source, HyperlinkSource::Text { story: sid, start: 10, end: 24 });
 
-    // 6. Delete inside range (12..16, length 0) -> end shrinks by 4: 10..20
+    // 7. Delete inside range (12..16, length 0) -> end shrinks by 4: 10..20
     d.adjust_text_ranges(sid, 12..16, 0);
     assert_eq!(d.hyperlinks[0].source, HyperlinkSource::Text { story: sid, start: 10, end: 20 });
 
-    // 7. Delete across start boundary (8..14, length 0) -> surviving start is 8, end is 14
+    // 8. Delete across start boundary (8..14, length 0) -> surviving start is 8, end is 14
     d.adjust_text_ranges(sid, 8..14, 0);
     assert_eq!(d.hyperlinks[0].source, HyperlinkSource::Text { story: sid, start: 8, end: 14 });
 
-    // 8. Delete entire range (5..20, length 0) -> pruned
+    // 9. Delete entire range (5..20, length 0) -> pruned
     d.adjust_text_ranges(sid, 5..20, 0);
     assert!(d.hyperlinks.is_empty());
     assert!(d.data_merge.placeholders.is_empty());
+}
+
+#[test]
+fn adjust_text_ranges_preserves_zero_length_ranges_and_drops_inverted() {
+    let mut d = doc();
+    let sid = StoryId(1);
+    // Zero-length placeholder (e.g. created at caret)
+    d.data_merge.placeholders.push(crate::Placeholder {
+        id: 1,
+        source_id: 1,
+        field: "CaretPh".into(),
+        role: crate::PlaceholderRole::Hyperlink,
+        anchor: crate::PlaceholderAnchor::Text { story: sid, start: 10, end: 10 },
+    });
+    // Inverted hyperlink from corrupt input
+    d.hyperlinks.push(Hyperlink {
+        id: 2,
+        name: "Inverted".into(),
+        source: HyperlinkSource::Text { story: sid, start: 25, end: 15 },
+        dest: HyperlinkDest::Url("https://example.com".into()),
+    });
+
+    // 1. Inverted range is pruned on edit
+    d.adjust_text_ranges(sid, 0..0, 2);
+    assert!(d.hyperlinks.is_empty(), "inverted range must be dropped");
+
+    // 2. Zero-length placeholder shifts when text is inserted before it (at 0, len 5) -> 15..15
+    assert_eq!(d.data_merge.placeholders[0].anchor, crate::PlaceholderAnchor::Text { story: sid, start: 12, end: 12 });
+    d.adjust_text_ranges(sid, 0..0, 5);
+    assert_eq!(d.data_merge.placeholders[0].anchor, crate::PlaceholderAnchor::Text { story: sid, start: 17, end: 17 });
+
+    // 3. Zero-length placeholder shifts when text is deleted before it (0..7) -> 10..10
+    d.adjust_text_ranges(sid, 0..7, 0);
+    assert_eq!(d.data_merge.placeholders[0].anchor, crate::PlaceholderAnchor::Text { story: sid, start: 10, end: 10 });
+
+    // 4. Deleting text enclosing the zero-length placeholder collapses it to the deletion start without pruning
+    d.adjust_text_ranges(sid, 5..15, 0);
+    assert_eq!(d.data_merge.placeholders[0].anchor, crate::PlaceholderAnchor::Text { story: sid, start: 5, end: 5 });
 }
 
 #[test]
@@ -432,4 +474,6 @@ fn move_text_ranges_tracks_hyperlinks_and_placeholders() {
     let between = d.hyperlinks.iter().find(|h| h.id == 2).unwrap();
     assert_eq!(inside.source, HyperlinkSource::Text { story: sid, start: 2, end: 8 });
     assert_eq!(between.source, HyperlinkSource::Text { story: sid, start: 15, end: 20 });
+    assert_eq!(d.hyperlinks[0].id, 1, "original list order in doc.hyperlinks must be preserved");
+    assert_eq!(d.hyperlinks[1].id, 2);
 }

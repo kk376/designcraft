@@ -197,7 +197,7 @@ fn track_changes_deleting_inserted_text_reconciles_hyperlink_ranges() {
     assert_eq!(text_hyperlink_range(&s, hid), (17, 23));
 
     // Enable Track Changes
-    s.execute("changes.track", &json!({"track": true})).unwrap();
+    s.execute("changes.track", &json!({"on": true})).unwrap();
 
     // Type "Draft " (6 bytes) at offset 0 while tracking
     s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
@@ -325,4 +325,138 @@ fn drag_move_preserves_hyperlink_and_adjusts_intervening_ranges() {
     let (start, end_pos) = text_hyperlink_range(&s, hid);
     assert_eq!((start, end_pos), (12, 17));
     assert_eq!(&text[start..end_pos], "brave");
+}
+
+#[test]
+fn typing_at_end_of_hyperlink_does_not_expand_range() {
+    let initial = "Click here for details.";
+    let (mut s, sid, _) = fixture(initial);
+
+    // "here" is at bytes 6..10
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 6, "focus": 10})).unwrap();
+    let hid = s.execute("hyperlink.create", &json!({"url": "https://example.com"})).unwrap()["ids"][0].as_u64().unwrap();
+    assert_eq!(text_hyperlink_range(&s, hid), (6, 10));
+
+    // Place caret at the very end of "here" (offset 10) and type
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 10, "focus": 10})).unwrap();
+    s.execute("text.insert", &json!({"text": " right now", "raw": true})).unwrap();
+
+    let text = &s.doc().unwrap().doc.story(sid).unwrap().text;
+    assert_eq!(text, "Click here right now for details.");
+    // The hyperlink on "here" must NOT expand; it must stay 6..10
+    assert_eq!(text_hyperlink_range(&s, hid), (6, 10));
+    assert_eq!(&text[6..10], "here");
+}
+
+#[test]
+fn track_changes_accept_all_shifts_later_hyperlinks() {
+    let initial = "Hello world. See page 2 for details.";
+    let (mut s, sid, _) = fixture(initial);
+
+    // "page 2" at 17..23
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 17, "focus": 23})).unwrap();
+    let hid = s.execute("hyperlink.create", &json!({"url": "https://example.com"})).unwrap()["ids"][0].as_u64().unwrap();
+    assert_eq!(text_hyperlink_range(&s, hid), (17, 23));
+
+    // Track Changes on
+    s.execute("changes.track", &json!({"on": true})).unwrap();
+
+    // Delete "Hello " (0..6) while tracking
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 6})).unwrap();
+    s.execute("text.delete", &json!({})).unwrap();
+
+    // While tracked change is pending, "Hello " is marked deleted but still in text
+    assert_eq!(text_hyperlink_range(&s, hid), (17, 23));
+
+    // Accept All
+    s.execute("changes.acceptAll", &json!({})).unwrap();
+
+    let text = &s.doc().unwrap().doc.story(sid).unwrap().text;
+    assert_eq!(text, "world. See page 2 for details.");
+    // Link must shift by 6 bytes to 11..17
+    assert_eq!(text_hyperlink_range(&s, hid), (11, 17));
+    assert_eq!(&text[11..17], "page 2");
+}
+
+#[test]
+fn track_changes_replacing_hyperlink_text_and_accepting_preserves_link() {
+    let initial = "Hello world. See page 2 for details.";
+    let (mut s, sid, _) = fixture(initial);
+
+    // "page 2" at 17..23
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 17, "focus": 23})).unwrap();
+    let hid = s.execute("hyperlink.create", &json!({"url": "https://example.com"})).unwrap()["ids"][0].as_u64().unwrap();
+    assert_eq!(text_hyperlink_range(&s, hid), (17, 23));
+
+    // Track Changes on
+    s.execute("changes.track", &json!({"on": true})).unwrap();
+
+    // Select "page 2" (17..23) and replace with "p. 2" (length 4)
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 17, "focus": 23})).unwrap();
+    s.execute("text.insert", &json!({"text": "p. 2", "raw": true})).unwrap();
+
+    // Accept All
+    s.execute("changes.acceptAll", &json!({})).unwrap();
+
+    let text = &s.doc().unwrap().doc.story(sid).unwrap().text;
+    assert_eq!(text, "Hello world. See p. 2 for details.");
+    // Link must now cover "p. 2" at 17..21
+    assert_eq!(text_hyperlink_range(&s, hid), (17, 21));
+    assert_eq!(&text[17..21], "p. 2");
+}
+
+#[test]
+fn inline_markers_shift_subsequent_hyperlinks() {
+    let initial = "Hello world. See page 2 for details.";
+    let (mut s, sid, _) = fixture(initial);
+
+    // "page 2" at 17..23
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 17, "focus": 23})).unwrap();
+    let hid = s.execute("hyperlink.create", &json!({"url": "https://example.com"})).unwrap()["ids"][0].as_u64().unwrap();
+    assert_eq!(text_hyperlink_range(&s, hid), (17, 23));
+
+    // 1. Create a text anchor at offset 5 ("anchor.create")
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 5, "focus": 5})).unwrap();
+    let aid = s.execute("anchor.create", &json!({"name": "TargetAnchor"})).unwrap()["id"].as_u64().unwrap();
+    let anchor_shift = designcraft_doc::ANCHOR_MARK.len_utf8();
+    assert_eq!(text_hyperlink_range(&s, hid), (17 + anchor_shift, 23 + anchor_shift));
+
+    // 2. Insert a cross-reference at offset 0 ("xref.insert")
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+    s.execute("xref.insert", &json!({"anchor": aid})).unwrap();
+    let xref_shift = designcraft_doc::XREF_MARK.len_utf8();
+    assert_eq!(text_hyperlink_range(&s, hid), (17 + anchor_shift + xref_shift, 23 + anchor_shift + xref_shift));
+
+    // 3. Insert an editorial note at offset 2 ("note.new")
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 2, "focus": 2})).unwrap();
+    let nid = s.execute("note.new", &json!({"text": "review this"})).unwrap()["id"].as_u64().unwrap();
+    let note_shift = designcraft_doc::NOTE_MARK.len_utf8();
+    assert_eq!(text_hyperlink_range(&s, hid), (17 + anchor_shift + xref_shift + note_shift, 23 + anchor_shift + xref_shift + note_shift));
+
+    // 4. Delete the editorial note ("note.delete")
+    s.execute("note.delete", &json!({"story": sid.0, "id": nid})).unwrap();
+    assert_eq!(text_hyperlink_range(&s, hid), (17 + anchor_shift + xref_shift, 23 + anchor_shift + xref_shift));
+}
+
+#[test]
+fn zero_length_placeholder_at_caret_is_preserved_on_story_edits() {
+    let initial = "Hello world. See page 2 for details.";
+    let (mut s, sid, _) = fixture(initial);
+
+    s.execute("data.source.select", &json!({"bytes": "TmFtZQpBZGEK", "name": "people.csv"})).unwrap();
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 6, "focus": 6})).unwrap();
+    let ph_id = s.execute("data.placeholder.add", &json!({"field": "Name", "role": "hyperlink"})).unwrap()["id"].as_u64().unwrap();
+
+    let doc = &s.doc().unwrap().doc;
+    let ph = doc.data_merge.placeholders.iter().find(|p| p.id == ph_id).unwrap();
+    assert_eq!(ph.anchor, designcraft_doc::PlaceholderAnchor::Text { story: sid, start: 6, end: 6 });
+
+    // Type text at offset 0
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+    s.execute("text.insert", &json!({"text": "Prefix: ", "raw": true})).unwrap();
+
+    // Placeholder must shift forward and NOT be pruned
+    let doc = &s.doc().unwrap().doc;
+    let ph = doc.data_merge.placeholders.iter().find(|p| p.id == ph_id).expect("placeholder must survive edit");
+    assert_eq!(ph.anchor, designcraft_doc::PlaceholderAnchor::Text { story: sid, start: 14, end: 14 });
 }

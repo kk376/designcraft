@@ -86,7 +86,9 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
             return s.edit(|d, sel| {
                 let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
                 let r = t.range();
-                st.delete(r.start.min(st.len())..r.end.min(st.len()));
+                let del = r.start.min(st.len())..r.end.min(st.len());
+                st.delete(del.clone());
+                d.adjust_text_ranges(t.story, del, 0);
                 // Fresh ids, story and asset copies for every paste, as on the page.
                 let mut stories = std::collections::HashMap::new();
                 let fresh: Vec<designcraft_doc::Item> = list

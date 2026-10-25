@@ -766,6 +766,29 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
                 d.adjust_text_ranges(t.story, rr, 0);
             }
             d.adjust_text_ranges(t.story, at..at, text.len());
+            if !r.is_empty() && !text.is_empty() {
+                let ins_span = at..at + text.len();
+                for h in &mut d.hyperlinks {
+                    if let designcraft_doc::HyperlinkSource::Text { story: sid, start, end } = &mut h.source
+                        && *sid == t.story
+                        && *start >= r.start
+                        && *end <= r.end
+                    {
+                        *start = ins_span.start;
+                        *end = ins_span.end;
+                    }
+                }
+                for ph in &mut d.data_merge.placeholders {
+                    if let designcraft_doc::PlaceholderAnchor::Text { story: sid, start, end } = &mut ph.anchor
+                        && *sid == t.story
+                        && *start >= r.start
+                        && *end <= r.end
+                    {
+                        *start = ins_span.start;
+                        *end = ins_span.end;
+                    }
+                }
+            }
             return Ok(json!({"pos": pos}));
         }
         let a = floor_char_boundary(&st.text, r.start.min(st.len()));
@@ -3888,7 +3911,7 @@ mod reserve_tests {
             .edit(|d, sel| {
                 let st = d.story_mut(sid).unwrap();
                 st.format_chars(5..9, |f| f.over.change = Some(designcraft_doc::ChangeMark::Inserted));
-                let at = super::super::changes::mark_deleted(st, 0..9);
+                let at = super::super::changes::mark_deleted_reporting(st, 0..9).0;
                 assert_eq!(at, 5);
                 assert_eq!(st.text, "Keep  text.");
                 assert_eq!(st.format_after(0).over.change, Some(designcraft_doc::ChangeMark::Deleted));
