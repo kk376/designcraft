@@ -31,6 +31,12 @@ pub(crate) fn mark_deleted_reporting(st: &mut Story, r: std::ops::Range<usize>) 
     (end, removed)
 }
 
+/// Mark `r` deleted (text this session inserted while tracking is simply removed). Returns where
+/// the text after the range now starts.
+pub(crate) fn mark_deleted(st: &mut Story, r: std::ops::Range<usize>) -> usize {
+    mark_deleted_reporting(st, r).0
+}
+
 /// Ranges of `mark` in `st`, last first.
 fn ranges(st: &Story, mark: ChangeMark) -> Vec<std::ops::Range<usize>> {
     let mut v: Vec<std::ops::Range<usize>> = st.runs().filter(|(_, f)| f.over.change == Some(mark)).map(|(r, _)| r).collect();
